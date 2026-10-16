@@ -30,7 +30,7 @@ Two back ends, picked automatically:
 3. Enables and restarts the stock `wpa_supplicant@<iface>` unit, which reads
    that file by name.
 4. The shipped `/usr/lib/systemd/network/80-wifi-cli.network` matches
-   `Type=wlan` and runs DHCP with `RouteMetric=600`, so a wired link still
+   `Type=wlan` and runs DHCP with `RouteMetric=2048`, so a wired link still
    takes the default route when both are up.
 5. Polls `networkctl status` until the interface is `routable`.
 

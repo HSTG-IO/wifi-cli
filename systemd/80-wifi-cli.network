@@ -1,7 +1,7 @@
 # Installed by wifi-cli. Lets systemd-networkd DHCP any wireless interface once
-# wpa_supplicant@<iface> has associated. Higher route metric than typical wired
-# (100–1024 default; most wired links land at 1024 but Ubuntu's netplan often
-# sets 100) so a plugged-in Ethernet cable still wins for the default route.
+# wpa_supplicant@<iface> has associated. The route metric is above every common
+# wired default (systemd-networkd 1024, NetworkManager and netplan 100), so a
+# plugged-in Ethernet cable still wins the default route; lower wins.
 [Match]
 Type=wlan
 
@@ -10,5 +10,5 @@ DHCP=yes
 IPv6AcceptRA=yes
 
 [DHCP]
-RouteMetric=600
+RouteMetric=2048
 UseDomains=yes

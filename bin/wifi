@@ -241,7 +241,7 @@ DHCP=yes
 IPv6AcceptRA=yes
 
 [DHCP]
-RouteMetric=600
+RouteMetric=2048
 EOF
 	warn "Wrote /etc/systemd/network/80-wifi-cli.network"
 fi
