@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# wifi — scan, pick, connect. Headless Wi-Fi provisioning for systemd-networkd boxes.
+#
+# Usage:
+#   wifi                      interactive: scan, select network, enter password, connect
+#   wifi <ssid> <password>    non-interactive connect (password NONE for an open network)
+#   wifi status               show link + address state
+#   wifi disable              stop and disable the wpa_supplicant unit
+#   wifi forget               disable and remove the saved network config
+#   wifi -i <iface> ...       force a specific wireless interface
+#   wifi -h                   this help
+#
+# Back end: iw scan -> wpa_passphrase -> wpa_supplicant@<iface> (stock Ubuntu unit) ->
+# systemd-networkd DHCP on the interface (shipped .network file) -> networkctl poll.
+# If NetworkManager owns the box, falls through to nmcli instead so we don't fight it.
+#
+# SPDX-License-Identifier: MIT
+
+set -o pipefail
+
+VERSION="0.1.0"
+NETWORK_UNIT_FILE="/usr/lib/systemd/network/80-wifi-cli.network"
+
+# ---------------------------------------------------------------- colours
+if [[ -t 1 ]]; then
+	RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; CYAN=$'\e[36m'; BOLD=$'\e[1m'; NC=$'\e[0m'
+else
+	RED=; GREEN=; YELLOW=; CYAN=; BOLD=; NC=
+fi
+
+die()  { echo "${RED}$*${NC}" >&2; exit 1; }
+info() { echo "${CYAN}$*${NC}"; }
+ok()   { echo "${GREEN}$*${NC}"; }
+warn() { echo "${YELLOW}$*${NC}"; }
+
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# ---------------------------------------------------------------- args
+IFACE=
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-i|--iface) IFACE=$2; shift 2 ;;
+		-h|--help)  usage 0 ;;
+		-V|--version) echo "wifi $VERSION"; exit 0 ;;
+		--) shift; break ;;
+		-*) die "Unknown option: $1" ;;
+		*) break ;;
+	esac
+done
+
+CMD=${1:-}
+case "$CMD" in
+	status|disable|forget) ;;
+	*) CMD=connect ;;
+esac
+
+[[ $(id -u) -eq 0 ]] || die "Must run as root (sudo wifi)."
+
+# ---------------------------------------------------------------- deps
+need() { command -v "$1" >/dev/null 2>&1; }
+missing=()
+need iw             || missing+=(iw)
+need wpa_passphrase || missing+=(wpa_supplicant)
+if [[ ${#missing[@]} -gt 0 ]]; then
+	# Package names differ per distro; only auto-install where we know the name.
+	if need apt-get; then
+		pkgs=("${missing[@]/wpa_supplicant/wpasupplicant}")
+		warn "Installing missing packages: ${pkgs[*]}"
+		apt-get install -y "${pkgs[@]}" || die "Could not install ${pkgs[*]}"
+	elif need dnf; then
+		warn "Installing missing packages: ${missing[*]}"
+		dnf install -y "${missing[@]}" || die "Could not install ${missing[*]}"
+	else
+		die "Missing: ${missing[*]} — install them with your package manager (iw, wpa_supplicant)."
+	fi
+fi
+
+# ---------------------------------------------------------------- interface
+find_iface() {
+	local d
+	# Prefer `iw dev` (nl80211); fall back to /sys for legacy drivers (ra0 etc.)
+	iw dev 2>/dev/null | awk '/Interface/{print $2; exit}' && return
+	for d in /sys/class/net/*; do
+		[[ -d $d/wireless || -d $d/phy80211 ]] && { basename "$d"; return; }
+	done
+	return 1
+}
+
+if [[ -z $IFACE ]]; then
+	IFACE=$(find_iface) || true
+fi
+if [[ -z $IFACE || ! -d /sys/class/net/$IFACE ]]; then
+	echo "${RED}No wireless interface found.${NC}"
+	echo "Check drivers; try ${CYAN}lsusb${NC} / ${CYAN}lspci | grep -i net${NC} to confirm the adapter is present."
+	exit 1
+fi
+
+CONF="/etc/wpa_supplicant/wpa_supplicant-${IFACE}.conf"
+UNIT="wpa_supplicant@${IFACE}.service"
+
+uses_networkmanager() {
+	need nmcli && systemctl is-active --quiet NetworkManager && \
+		[[ "$(nmcli -g GENERAL.STATE device show "$IFACE" 2>/dev/null)" != *unmanaged* ]]
+}
+
+# ---------------------------------------------------------------- status
+show_status() {
+	echo "${BOLD}Interface:${NC} $IFACE"
+	iw dev "$IFACE" link 2>/dev/null | sed 's/^/  /'
+	if uses_networkmanager; then
+		nmcli -f GENERAL.STATE,GENERAL.CONNECTION,IP4.ADDRESS device show "$IFACE" 2>/dev/null | sed 's/^/  /'
+	else
+		networkctl status "$IFACE" 2>/dev/null | sed 's/^/  /'
+	fi
+	echo
+}
+
+if [[ $CMD == status ]]; then show_status; exit 0; fi
+
+# ---------------------------------------------------------------- disable / forget
+if [[ $CMD == disable || $CMD == forget ]]; then
+	if uses_networkmanager; then
+		nmcli device disconnect "$IFACE" >/dev/null 2>&1 || true
+		[[ $CMD == forget ]] && nmcli -g NAME,DEVICE connection show | awk -F: -v i="$IFACE" '$2==i{print $1}' | \
+			while read -r c; do nmcli connection delete "$c"; done
+	else
+		systemctl disable --now "$UNIT" 2>/dev/null && ok "Stopped and disabled $UNIT"
+		if [[ $CMD == forget ]]; then
+			rm -f "$CONF" && ok "Removed $CONF"
+		fi
+	fi
+	exit 0
+fi
+
+# ---------------------------------------------------------------- connect
+SSID=${1:-}
+PASS=${2:-}
+interactive=0
+if [[ -z $SSID ]]; then
+	[[ -t 0 && -t 1 ]] || die "Not a terminal. Use: wifi <ssid> <password>"
+	interactive=1
+fi
+
+ip link set "$IFACE" up 2>/dev/null || warn "Could not bring $IFACE up"
+
+scan() {
+	# iw scan output -> unique, non-empty SSIDs. Escaped chars (\x20) are decoded.
+	iw dev "$IFACE" scan 2>/dev/null \
+		| sed -n 's/^[[:space:]]*SSID: //p' \
+		| grep -v '^$' \
+		| while IFS= read -r s; do printf '%b\n' "$s"; done \
+		| sort -u
+}
+
+if [[ $interactive -eq 1 ]]; then
+	info "=== WiFi setup ($IFACE) ==="
+	show_status
+	while true; do
+		PASS=
+		printf '%s' "${CYAN}Scanning networks...${NC}"
+		mapfile -t ssids < <(scan)
+		echo "${CYAN} found ${#ssids[@]}${NC}"
+		options=("[RESCAN]" "[CUSTOM SSID]" "[ANY OPEN NETWORK]" "${ssids[@]}")
+		echo "${YELLOW}Select access point:${NC}"
+		PS3="#? "
+		rescan=0
+		select SSID in "${options[@]}"; do
+			[[ -z $SSID ]] && { echo "Invalid choice"; continue; }
+			case "$REPLY" in
+				1) rescan=1 ;;
+				2) SSID= ;;
+				3) SSID=__ANY_OPEN__; PASS=NONE ;;
+				*) echo "SSID: ${BOLD}$SSID${NC}" ;;
+			esac
+			break
+		done
+		[[ $rescan -eq 1 ]] && continue
+
+		if [[ -z $SSID ]]; then
+			read -r -p "SSID: " SSID
+			[[ -z $SSID ]] && { echo "Empty value"; continue; }
+		fi
+		if [[ -z $PASS ]]; then
+			read -r -s -p "Password (type NONE for an open network): " PASS; echo
+			[[ -z $PASS ]] && { echo "Empty value"; continue; }
+			if [[ $PASS != NONE && ( ${#PASS} -lt 8 || ${#PASS} -gt 63 ) ]]; then
+				echo "WPA passphrase must be 8–63 characters"; continue
+			fi
+		fi
+		break
+	done
+fi
+
+[[ -n $SSID && -n $PASS ]] || die "Need both SSID and password (use NONE for open networks)."
+
+# ---- NetworkManager path --------------------------------------------------
+if uses_networkmanager; then
+	info "NetworkManager manages $IFACE — using nmcli"
+	if [[ $SSID == __ANY_OPEN__ ]]; then
+		SSID=$(nmcli -g SSID,SECURITY device wifi list ifname "$IFACE" --rescan yes | awk -F: '$2==""{print $1; exit}')
+		[[ -n $SSID ]] || die "No open network in range"
+	fi
+	if [[ $PASS == NONE ]]; then
+		nmcli device wifi connect "$SSID" ifname "$IFACE"
+	else
+		nmcli device wifi connect "$SSID" password "$PASS" ifname "$IFACE"
+	fi
+	rc=$?
+	show_status
+	if [[ $rc -eq 0 ]]; then ok "Connected to $SSID"; else die "Connection failed"; fi
+	exit $rc
+fi
+
+# ---- systemd-networkd + wpa_supplicant path -------------------------------
+install -d -m 700 /etc/wpa_supplicant
+{
+	echo "ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev"
+	echo "update_config=0"
+	echo
+	if [[ $SSID == __ANY_OPEN__ ]]; then
+		printf 'network={\n\tkey_mgmt=NONE\n\tpriority=-999\n}\n'
+	elif [[ $PASS == NONE ]]; then
+		printf 'network={\n\tssid="%s"\n\tkey_mgmt=NONE\n}\n' "$SSID"
+	else
+		# wpa_passphrase emits the PSK hash plus a commented plaintext line; drop the plaintext.
+		wpa_passphrase "$SSID" "$PASS" | grep -v '^\s*#psk=' || exit 1
+	fi
+} > "$CONF.tmp" || die "Failed to generate config"
+chmod 600 "$CONF.tmp"
+mv -f "$CONF.tmp" "$CONF"
+ok "Saved $CONF"
+
+# Make sure networkd will DHCP this interface (shipped with the package, but be defensive).
+if [[ ! -e $NETWORK_UNIT_FILE && ! -e /etc/systemd/network/80-wifi-cli.network ]]; then
+	cat > /etc/systemd/network/80-wifi-cli.network <<'EOF'
+[Match]
+Type=wlan
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+
+[DHCP]
+RouteMetric=600
+EOF
+	warn "Wrote /etc/systemd/network/80-wifi-cli.network"
+fi
+systemctl is-active --quiet systemd-networkd || systemctl enable --now systemd-networkd
+networkctl reload 2>/dev/null || true
+
+systemctl enable "$UNIT" >/dev/null 2>&1
+systemctl restart "$UNIT" || die "Failed to start $UNIT (journalctl -u $UNIT)"
+
+printf '%s' "State:"
+state=
+for ((i = 0; i < 20; i++)); do
+	state=$(networkctl status "$IFACE" 2>/dev/null | sed -n 's/.*State: \([a-z-]*\).*/\1/p' | head -1)
+	printf ' %s' "${state:-?}"
+	[[ $state == routable ]] && break
+	sleep 1
+done
+echo; echo
+show_status
+
+if [[ $state == routable ]]; then
+	ok "WiFi setup done. Connected."
+else
+	echo "${RED}WiFi setup done, but no connection yet.${NC}"
+	echo "Check the passphrase, or: ${CYAN}journalctl -u $UNIT -n 30${NC}"
+	exit 2
+fi
+echo "To turn Wi-Fi back off later: ${CYAN}wifi disable${NC}"

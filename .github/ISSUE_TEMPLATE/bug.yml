@@ -1,0 +1,29 @@
+name: Bug report
+description: wifi didn't connect, or did something wrong
+body:
+  - type: input
+    id: distro
+    attributes: { label: Distro and version, placeholder: "Ubuntu 24.04 / Fedora 42 / Raspberry Pi OS Bookworm" }
+    validations: { required: true }
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Who manages the interface?
+      options: [systemd-networkd, NetworkManager, "not sure"]
+    validations: { required: true }
+  - type: input
+    id: adapter
+    attributes: { label: Adapter and driver, placeholder: "Intel AX210 / iwlwifi, or Realtek RTL8812AU dongle / 88XXau" }
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: "`sudo wifi status`, then the failing command. Redact SSIDs if you like; never paste a password."
+      render: shell
+    validations: { required: true }
+  - type: textarea
+    id: journal
+    attributes:
+      label: Supplicant log
+      description: "`journalctl -u wpa_supplicant@<iface> -n 50`"
+      render: shell

@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y shellcheck
+          shellcheck -s bash bin/wifi
+          bash -n bin/wifi
+      - name: man page renders
+        run: man -l man/wifi.8 >/dev/null
+
+  deb:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make deb
+      - name: install smoke test
+        run: |
+          sudo apt-get install -y ./build/*.deb
+          wifi --version
+          man -w wifi
+      - uses: actions/upload-artifact@v4
+        with: { name: deb, path: build/*.deb }
+
+  rpm:
+    needs: lint
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: dnf install -y make rpm-build git
+      - run: make rpm
+      - name: install smoke test
+        run: |
+          dnf install -y build/rpm/RPMS/noarch/*.rpm
+          wifi --version
+      - uses: actions/upload-artifact@v4
+        with: { name: rpm, path: build/rpm/RPMS/noarch/*.rpm }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [deb, rpm]
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - run: make dist
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*
+            build/*.tar.gz
+          generate_release_notes: true

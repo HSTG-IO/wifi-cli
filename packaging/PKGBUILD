@@ -1,0 +1,19 @@
+# Maintainer: Elliott <elliott@hstg.io>
+pkgname=wifi-cli
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Scan, pick and connect to Wi-Fi from a headless shell"
+arch=('any')
+url="https://github.com/HSTG-IO/wifi-cli"
+license=('MIT')
+depends=('bash' 'iw' 'wpa_supplicant' 'systemd' 'iproute2')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # fill in at release: sha256sum wifi-cli-0.1.0.tar.gz
+
+package() {
+    cd "$pkgname-$pkgver"
+    make DESTDIR="$pkgdir" PREFIX=/usr install
+    # Arch keeps licenses here; drop the generic docdir copy
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    rm -f "$pkgdir/usr/share/doc/$pkgname/copyright"
+}

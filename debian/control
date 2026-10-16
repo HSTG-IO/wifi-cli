@@ -1,0 +1,14 @@
+Package: wifi-cli
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: all
+Depends: bash (>= 4.3), iw, wpasupplicant, systemd, iproute2
+Recommends: wireless-regdb
+Maintainer: Elliott <elliott@hstg.io>
+Homepage: https://github.com/HSTG-IO/wifi-cli
+Description: scan, pick and connect to Wi-Fi from a headless shell
+ Provides a single `wifi` command: run it, it scans for networks, shows a
+ numbered list, asks for a password and connects. Persists across reboots via
+ wpa_supplicant@<iface> and systemd-networkd. Falls back to nmcli when
+ NetworkManager owns the interface. Plain bash; no daemon.

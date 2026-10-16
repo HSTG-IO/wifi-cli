@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+    # Pick up the shipped .network file without a reboot if networkd is running.
+    if command -v networkctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-networkd; then
+        networkctl reload 2>/dev/null || true
+    fi
+fi
+exit 0

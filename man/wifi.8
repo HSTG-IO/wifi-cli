@@ -1,0 +1,104 @@
+.TH WIFI 8 "October 2026" "wifi-cli 0.1.0" "System Administration"
+.SH NAME
+wifi \- scan, pick and connect to a Wi-Fi network from a headless shell
+.SH SYNOPSIS
+.B wifi
+.RI [ \-i\ iface ]
+.br
+.B wifi
+.RI [ \-i\ iface ]
+.I ssid password
+.br
+.B wifi
+.RI [ \-i\ iface ]
+.BR status | disable | forget
+.br
+.B wifi
+.BR \-h | \-V
+.SH DESCRIPTION
+With no arguments,
+.B wifi
+scans for networks on the first wireless interface it finds, presents a
+numbered list, prompts for a passphrase, writes the supplicant configuration,
+and waits until the interface is routable. The connection is persistent across
+reboots.
+.PP
+Given an
+.I ssid
+and
+.IR password ,
+it connects without prompting. Pass
+.B NONE
+as the password for an open network.
+.PP
+On systems where NetworkManager manages the interface,
+.B wifi
+delegates to
+.BR nmcli (1)
+instead of configuring wpa_supplicant directly.
+.SH COMMANDS
+.TP
+.B status
+Show link state, address and the backend's view of the interface.
+.TP
+.B disable
+Stop and disable the
+.BI wpa_supplicant@ iface
+unit. The saved network is kept.
+.TP
+.B forget
+As
+.BR disable ,
+and also remove the saved network configuration.
+.SH OPTIONS
+.TP
+.BI \-i\  iface ", " \-\-iface= iface
+Operate on
+.I iface
+instead of the first wireless interface found.
+.TP
+.BR \-h ", " \-\-help
+Print usage.
+.TP
+.BR \-V ", " \-\-version
+Print version.
+.SH FILES
+.TP
+.BI /etc/wpa_supplicant/wpa_supplicant\- iface .conf
+Generated network configuration (mode 0600, PSK hash only). Read by the stock
+.BI wpa_supplicant@ iface
+systemd unit.
+.TP
+.I /usr/lib/systemd/network/80\-wifi\-cli.network
+Shipped systemd\-networkd unit matching
+.BR Type=wlan ;
+enables DHCP with route metric 600 so a wired link keeps the default route.
+.SH EXIT STATUS
+.TP
+.B 0
+Connected.
+.TP
+.B 1
+Usage error, missing dependency, or no wireless interface.
+.TP
+.B 2
+Supplicant started but the interface did not become routable within 20 seconds.
+.SH EXAMPLES
+Interactive setup from a serial console:
+.PP
+.RS
+.B sudo wifi
+.RE
+.PP
+Unattended first boot:
+.PP
+.RS
+.B wifi 'Site3-Mgmt' 'correct horse battery staple'
+.RE
+.SH SEE ALSO
+.BR wpa_supplicant (8),
+.BR wpa_passphrase (8),
+.BR networkctl (1),
+.BR systemd.network (5),
+.BR iw (8),
+.BR nmcli (1)
